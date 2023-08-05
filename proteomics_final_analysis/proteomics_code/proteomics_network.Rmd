@@ -1,0 +1,247 @@
+---
+title: "proteomics_network"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(qiime2R)
+library(phyloseq)
+library(psych)
+library(reshape2)
+library(ggraph)
+library(ggnetwork)
+library(tidygraph)
+library(clusterProfiler)
+library(tidyverse)
+library(ggprism)
+library(rcartocolor)
+theme_set(theme_prism(base_size = 14))
+```
+
+Import normalyzer log-transfromed proteomics data
+```{r import}
+cnts <- read_tsv(here::here("normalyzer/test_run/log2-normalized.txt"))
+meta <- read_tsv(here::here("norm_meta.tsv")) %>% 
+  mutate(sample_id = str_remove_all(str_extract(sample,"i_.._....-"),"_|-"))
+metadata <- import_qiime_sample_data(here::here("../Metadata.txt"))
+
+mq_meta <- meta %>% 
+  mutate(sample_id = str_c(Patient,group, sep = "-")) %>% 
+  mutate(sample_id = str_replace(sample_id,"14-prox","14-Prox"),
+         sample_id = str_replace(sample_id,"14-dist","14-Dist"))
+mq_mat <- cnts [,-1] %>% 
+  . [,mq_meta$sample] %>% 
+  rename_with(function(x) mq_meta$sample_id) %>% 
+  mutate(across(everything(),~ as.numeric(str_replace_na(.,replacement = 0)))) %>% 
+  as.matrix()
+rownames(mq_mat) <- cnts$Genes
+#Import DA analysis results
+limma_res <- read_csv(here::here("final_results/final_limma_DE_analysis_outlier_removed.csv"))
+signi_prot <- limma_res %>% 
+  filter(adj.P.Val < 0.05) %>% 
+  pull(...1)
+#Keep only significant hits
+mq_mat_signi_only <- mq_mat [signi_prot,]
+```
+
+Spearman correlations
+```{r bare_spearman}
+cor_df <- data.frame(Var1 = "", Var2 = "", value.x = 0, L1.x = 0, value.y =0, L1.y = 0)
+for (i in seq_along(mq_mat_signi_only [-1,1])) {
+  mq_mat_sequential <- t(mq_mat_signi_only) [,-1:-i]
+  cors <- corr.test(mq_mat_signi_only [i,], mq_mat_sequential, method = "spearman", adjust = "BH")
+  if(i != (nrow(mq_mat_signi_only) -1) ) {
+    cor_df_loop <- left_join(melt(cors ["p"]), melt(cors ["r"]), by = c("Var1","Var2"))
+  } else {
+    melt_p <- melt(cors ["p"]) %>% 
+      mutate(Var1 = rownames(mq_mat_signi_only) [i],
+             Var2 = rownames(mq_mat_signi_only) [nrow(mq_mat_signi_only)])
+    melt_r <- melt(cors ["r"]) %>% 
+      mutate(Var1 = rownames(mq_mat_signi_only) [i],
+             Var2 = rownames(mq_mat_signi_only) [nrow(mq_mat_signi_only)])
+    cor_df_loop <- left_join(melt_p,melt_r, by = c("Var1","Var2")) %>% 
+      select(Var1, Var2, everything())
+  }
+  cor_df_loop <- cor_df_loop %>% 
+    mutate(Var1 = rownames(mq_mat_signi_only) [i])
+  cor_df <- rbind(cor_df, cor_df_loop)
+}
+cor_df_adjust <- cor_df %>% 
+  slice(-1) %>% 
+  mutate(padj = p.adjust(value.x, method = "BH")) %>% 
+  filter(padj < 0.05) %>% 
+  filter(abs(value.y) > 0.75)
+#write_tsv(cor_df_adjust, here::here("correlation/spearman_network_basic.tsv"))
+```
+
+
+```{r scatter-test}
+x_mq <- mq_mat_signi_only ["CLCA1",]
+y_mq <- mq_mat_signi_only ["FCGBP",]
+ggplot(data.frame(x=x_mq,y=y_mq), aes(x=x,y=y)) +
+  geom_point() + geom_smooth(method = "lm")
+ggstatsplot::ggscatterstats(data.frame(x=x_mq,y=y_mq),x=x,y=y, type = "non-parametric")
+```
+
+Read in community clusters from cytoscape
+```{r read-glay}
+glay <- read_csv(here::here("correlation/glay-clustered-network.csv"))
+#Select only clusters with at least 6 proteins present in each
+glay_nest <- glay %>% 
+  select(`__glayCluster`, name) %>% 
+  nest_by(`__glayCluster`) %>% 
+  filter(map_lgl(data, ~length(.)>=6))
+#Prepare protein names per cluster as a list
+glay_names <- map(glay_nest$data, pull, name) %>% 
+  set_names(str_c("glay_cluster ", glay_nest$`__glayCluster`))
+```
+
+Perform functional profiling of the clusters
+```{r glay-enrichment}
+#Import the Hallmark set of genes and themes
+h <- read.gmt(here::here("h.all.v7.5.1.symbols.gmt"))
+cp <- read.gmt(here::here("c2.cp.v7.5.1.symbols.gmt")) %>%      
+  filter(str_detect(term, "REACT")) %>% 
+  mutate(term = str_remove(term, "REACTOME_"))
+
+enrich_h_list <- map(glay_names, ~enricher(.,
+                                           universe = limma_res$`...1`,
+                                           TERM2GENE = h,
+                                           pAdjustMethod = "BH",
+                                           pvalueCutoff = 0.05,
+                                           qvalueCutoff = 0.05))
+enrich_h_df <- map(enrich_h_list, as.data.frame)
+enrich_h_list_suc <- keep(enrich_h_list, map_lgl(enrich_h_df, ~nrow(.)>0))
+
+enrich_cp_list <- map(glay_names, ~enricher(.,
+                                           universe = limma_res$`...1`,
+                                           TERM2GENE = cp,
+                                           pAdjustMethod = "BH",
+                                           pvalueCutoff = 0.05,
+                                           qvalueCutoff = 0.05))
+
+enrich_cp_df <- map(enrich_cp_list, as.data.frame)
+enrich_cp_list_suc <- keep(enrich_cp_list, map_lgl(enrich_cp_df, ~nrow(.)>0))
+fold_change <- set_names(limma_res$logFC, nm = limma_res$`...1`)
+
+#Get the color gradient
+mycolors <- carto_pal(name = "Geyser")
+
+#Plot the results
+#pdf(here::here("correlation/hallmark_cluster_analysis.pdf"), width = 8, height = 6)
+walk2(enrich_h_list_suc, 
+      names(enrich_h_list_suc),
+      ~print(dotplot(.x, font.size = 14) +
+               scale_color_gradient(high = mycolors [3],low = mycolors [7], breaks = c(0.03,0.05,0.07)) +
+               labs(caption = .y)))
+walk2(enrich_h_list_suc, names(enrich_h_list_suc),
+      ~print(heatplot(.x, foldChange = fold_change) +
+               scale_fill_gradient2(name = "logFC",low = mycolors [1],high = mycolors [7], mid = mycolors [4], midpoint = 0) +
+               labs(caption = .y) +
+               theme(text = element_text(size=14, color = "black"),
+                     axis.text =element_text(size=14, color = "black"))))
+#dev.off()
+```
+
+The colors came from CARTO: https://carto.com/carto-colors/ Sunset 1 and 2
+```{r glay-enrichment-plot, fig.height=7, fig.width=6}
+#pdf(here::here("correlation/reactome_cluster_analysis.pdf"), width = 7, height = 6)
+walk2(enrich_cp_list_suc, 
+      names(enrich_cp_list_suc),
+      ~print(dotplot(.x, font.size = 11, showCategory = 10) +
+               scale_color_gradient(high = mycolors [7], low = mycolors [3]) +
+               labs(caption = .y) + guides(color = 'colorbar')))
+
+walk2(enrich_cp_list_suc, names(enrich_cp_list_suc),
+      ~print(heatplot(.x, foldChange = fold_change, showCategory = 10) +
+               scale_fill_gradient2(name = "logFC",low = mycolors [1],high = mycolors [7], mid = mycolors [4], midpoint = 0) +
+                #scale_fill_carto_c(name = "LogFC", palette = "Geyser") + 
+               labs(caption = .y)))
+#dev.off()
+```
+
+
+
+Plot ggraph test
+```{r igraph, fig.width=10, fig.height=8}
+#Create networks for each glay cluster with successful annotation from reactome
+glay_networks <- keep(glay_names,names(glay_names) %in% names(enrich_cp_list_suc)) %>% 
+  map(~filter(cor_df_adjust, Var1 %in% . | Var2 %in% .)) %>% 
+  map(~mutate(., Cor = ifelse(value.y>0,"Positive","Negative")))
+
+net_graph_list <- glay_networks %>% 
+  map(as_tbl_graph, directed = F) %>% 
+  map(activate, nodes) %>% 
+  map(left_join,select(limma_res, "name" = `...1`,logFC), by = "name")
+
+#pdf(here::here("correlation/smaller_networks_3_4.pdf"), width = 9, height = 8)
+walk2(net_graph_list [3:4], names(net_graph_list [3:4]),
+     ~print(ggraph(.x, layout = 'kk') +
+              geom_edge_link(aes(color = value.y), edge_width = 0.9, 
+                             end_cap = circle(32,"points"), start_cap = circle(32,"points")) +
+              #scale_edge_color_distiller(name = "Spearman's Rho", palette = "RdBu") +
+              scale_edge_color_gradient2(name = "Spearman's rho", 
+                                         low = mycolors [1],high = mycolors [7], mid = mycolors [4], midpoint = 0)+
+              geom_node_point(aes(fill = logFC), color = "black" ,size = 30, shape = 21, alpha = 0.7) +
+              geom_node_text(aes(label = name),color = "black", size = 5, repel = F) +
+              scale_fill_gradient2(name = "logFC",low = mycolors [2],high = mycolors [6], mid = mycolors [4], midpoint = 0) +
+              coord_cartesian(clip = "off", expand = T) + labs(caption = .y) +
+              theme_blank(plot.margin = margin(20,10,10,10, "pt"))))
+
+walk2(net_graph_list [3:4], names(net_graph_list [3:4]),
+     ~print(ggraph(.x, layout = 'kk') +
+              geom_edge_link(aes(lty = Cor), edge_width = 0.9, 
+                             end_cap = circle(32,"points"), start_cap = circle(32,"points")) +
+              scale_edge_linetype_manual(name = "Correlation", 
+                                         values = c("Positive" = 1,
+                                                    "Negative" = 3)) +
+              #scale_edge_color_distiller(name = "Spearman's Rho", palette = "RdBu") +
+              geom_node_point(aes(fill = logFC), color = "black" ,size = 30, shape = 21, alpha = 0.7) +
+              geom_node_text(aes(label = name),color = "black", size = 5, repel = F) +
+              scale_fill_gradient2(name = "logFC",low = mycolors [2],high = mycolors [6], mid = mycolors [4], midpoint = 0) +
+              coord_cartesian(clip = "off", expand = T) + labs(caption = .y) +
+              theme_blank(plot.margin = margin(20,10,10,10, "pt"))))
+
+
+#dev.off()
+```
+
+
+```{r igraph-2, fig.width=12, fig.height=10}
+#pdf(here::here("correlation/bigger_clusters_1_2.pdf"), width = 12, height = 10)
+walk2(net_graph_list [1:2], names(net_graph_list [1:2]),
+     ~print(ggraph(.x, layout = 'graphopt') +
+              geom_edge_link(aes(color = value.y), edge_width = 0.9, alpha = 0.7) +
+              scale_edge_color_gradient2(name = "Spearman's rho", 
+                                         low = mycolors [1],high = mycolors [7], mid = mycolors [4], midpoint = 0) +
+              geom_node_point(fill = "white", color = "white" ,size = 19, shape = 21) +
+              geom_node_point(aes(fill = logFC), color = "black" ,size = 19, shape = 21, alpha = 0.7) +
+              geom_node_text(aes(label = name),color = "black", size = 2.6, repel = F) +
+              scale_fill_gradient2(name = "logFC",low = mycolors [2],high = mycolors [6], 
+                                   mid = mycolors [4], midpoint = 0, limits = c(-1,1), na.value = mycolors [7]) +
+              coord_cartesian(clip = "off", expand = T) + labs(caption = .y) +
+              theme_blank(base_size = 14,plot.margin = margin(5,5,5,5,"pt"))))
+
+walk2(net_graph_list [1:2], names(net_graph_list [1:2]),
+     ~print(ggraph(.x, layout = 'graphopt') +
+              geom_edge_link(aes(lty = Cor), edge_width = 0.9, alpha = 0.7, color = "grey30") +
+              scale_edge_linetype_manual(name = "Correlation", 
+                                         values = c("Positive" = 1,
+                                                    "Negative" = 3)) +
+              geom_node_point(fill = "white", color = "white" ,size = 19, shape = 21) +
+              geom_node_point(aes(fill = logFC), color = "black" ,size = 19, shape = 21, alpha = 0.7) +
+              geom_node_text(aes(label = name),color = "black", size = 2.6, repel = F) +
+              scale_fill_gradient2(name = "logFC",low = mycolors [2],high = mycolors [6], 
+                                   mid = mycolors [4], midpoint = 0, limits = c(-1,1), na.value = mycolors [7]) +
+              coord_cartesian(clip = "off", expand = T) + labs(caption = .y) +
+              theme_blank(base_size = 14,plot.margin = margin(5,5,5,5,"pt"))))
+#dev.off()
+```
+
+
+
+
+
+
+

@@ -1,0 +1,31 @@
+---
+title: "quick check of sets of genes"
+output: html_notebook
+author: Zakhar Krekhno
+---
+
+
+```{r setup, include=FALSE}
+library(readxl)
+library(ggprism)
+library(rcartocolor)
+library(tidyverse)
+```
+
+```{r import}
+res <- read.table(here::here("median_normalized_results_robust.txt")) %>% 
+  as_tibble(rownames = "names")
+innate_df <- read_tsv(here::here("Innate Immune/uniprot-innate_immune- compressed_true_download_true_fields_accession_2Creviewed_2C-2023.05.29-07.15.53.43.tsv"))
+innate_df_sep <- innate_df %>% 
+  separate_rows(`Gene Names`, sep = " ")
+which(innate_df_sep$`Gene Names` %in% res$names)
+res_innate <- res %>% 
+  filter(names %in% innate_df_sep$`Gene Names`)
+
+amp_df <- read_tsv(here::here("Innate Immune/uniprot-AMP-download_true_fields_accession_2Creviewed_2Cid_2Cprotein_nam-2023.05.29-07.30.51.20.tsv"))
+amp_df_sep <- amp_df %>% 
+  separate_rows(`Gene Names`, sep = " ")
+res_amp <- res %>% 
+  filter(names %in% amp_df_sep$`Gene Names`)
+```
+
