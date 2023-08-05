@@ -1,0 +1,46 @@
+---
+title: "Proteomics analysis of Haggai pediatric data"
+subtitle: "Data collected with DIA, analyzed with DIA-NN"
+output: html_notebook
+---
+
+```{r}
+knitr::opts_chunk$set(fig.width = 12, fig.height = 10)
+```
+
+```{r}
+library(tidyverse)
+library(limma)
+library(readxl)
+library(NormalyzerDE)
+```
+
+Read in the edited maxquant proteinGroups file. Only keep columns with iBAQ intensitites, gene info, and contaminnat info. Remove iBAQ peptides column from the protein groups file
+
+```{r fig.width=15}
+mq <- read_excel(here::here("proteomics_final_analysis/26samples_ProxDist_PG.xlsx"), sheet = 2)
+samples <- mq %>% 
+  colnames %>% 
+  str_remove("D:\\\\Data\\\\Jenny\\\\Ravi\\\\.._....\\\\")
+colnames(mq) <- samples
+codes <- samples [-1] %>% 
+  as_tibble_col(column_name = "sample") %>% 
+  mutate(Patient = str_remove_all(str_extract(sample,"_.._"),"_"),
+         group = str_remove_all(str_extract(sample,"_....-"),"_|-"))
+```
+
+Start with normalyzerDE to test all normalization methods
+
+```{r eval=FALSE}
+write_tsv(codes, file = here::here("proteomics_final_analysis/norm_meta.tsv"))
+write_tsv(mq , file = here::here("proteomics_final_analysis/norm_mq.tsv"))
+  
+normalyzer(jobName="test_run", designPath=here::here("proteomics_final_analysis/norm_meta.tsv"), 
+           dataPath=here::here("proteomics_final_analysis/norm_mq.tsv"),
+           outputDir = here::here("proteomics_final_analysis/normalyzer/"))
+```
+
+
+
+
+
