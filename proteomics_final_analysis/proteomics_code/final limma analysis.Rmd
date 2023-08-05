@@ -93,6 +93,7 @@ select_labs <- out_res.r %>%
   rownames_to_column(var = "rowname") %>% 
   pull(var = "rowname") %>% 
   . [1:5]
+mycolors <- rcartocolor::carto_pal(name = "Geyser")
 #pdf(here::here("proteomics_final_analysis/final_results/Volcano plots without outliers.pdf"), width = 8, height = 6)
 EnhancedVolcano(out_res.r, 
               x = "logFC",
