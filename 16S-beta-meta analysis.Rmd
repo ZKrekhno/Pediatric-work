@@ -20,7 +20,15 @@ library(tidyverse)
 library(metagMisc)
 library(ggprism)
 library(rstatix)
-theme_set(theme_prism(base_size = 16))
+```
+
+
+```{r helper-set-up, include=FALSE}
+theme_set(theme_classic(base_size = 16) + 
+                     theme(axis.text = element_text(face = "bold", size = 15),
+                           axis.title = element_text(face = "bold")))
+#Define my colors
+mycolors <- c("seagreen4","violetred4")
 ```
 
 ```{r import}
@@ -49,50 +57,6 @@ which(sample_sums(physeq) < 1000)
 psfiltered <- prune_samples(sample_sums(physeq) >= 1000, physeq)
 sample_names(psfiltered)
 psfiltered
-```
-
-Do some DA analysis
-
-```{r ps-deseq, eval=FALSE}
-library(DESeq2)
-#I have run this to Rank4 or Rank5
-psfilt_family <- tax_glom(psfiltered, taxrank = "Rank4")
-deseq_ps <- phyloseq_to_deseq2(psfilt_family, design = ~ Patient + Type)
-
-calculate_gm_mean <- function(x, na.rm = TRUE) {
-  exp(sum(log(x[x > 0]), na.rm = na.rm) / length(x))
-}
-
-geo_means <- apply(counts(deseq_ps), 1, calculate_gm_mean)
-deseq_gut <- estimateSizeFactors(deseq_ps, geoMeans = geo_means)
-deseq_gut <- DESeq(deseq_gut, fitType = "local")
-
-gut_diff_abund <- c("Type_Effluent_vs_Distal", "Type_Proximal_vs_Distal") %>% 
-  map(~as.data.frame(results(deseq_gut, name = .x))) %>% 
-  purrr::reduce(merge, by = 0, suffixes = c(".Effluent",".Proximal"))
-
-gut_DA_tax <- merge(gut_diff_abund, tax_table(psfilt_family), by.x = "Row.names", by.y= 0)
-
-library(ANCOMBC)
-ancom_family <- ancombc(psfilt_family, formula = "Patient + Type", p_adj_method = "fdr")
-ancom_res <- ancom_family$res %>% 
-  as.data.frame() %>% 
-  select(-contains("Patient")) %>% 
-  merge(tax_table(psfilt_family), by = 0)
-
-plot_abund_df <- transformSampleCounts(psfilt_family, fun = function(x) x/sum(x)) %>% 
-  psmelt() %>% 
-  filter(str_detect(Rank4, "Enterobac"))
-
-#I have run several different versions of this command to make different graphs
-ggplot(filter(plot_abund_df, Type != "E"), aes(x=Type, y = Abundance)) +
-  geom_boxplot(lwd = 1) +
-  geom_point(aes(fill = Type),width = 0.3, size = 3, shape = 21, alpha = 0.7) +
-  geom_line(aes(x=Type, y=Abundance, group = Patient)) +
-  ggtitle("order_Enterobacterales") +
-  guides(fill = 'none')
-#ggsave(here::here("order_enterobac_abun.png"), width = 6, height = 4, dpi = 720)
-
 ```
 
 
@@ -134,46 +98,7 @@ anova(vegan::betadisper(dist, perm_meta$Batch))
 
 
 
-```{r beta-score-scatter}
-#Add metadata variables to the table and correlate
-uwu_dist_meta <- uwu_dist_df %>% 
-  left_join(metadata, by = c("SampleID" = "sample.id"))
-#Prepare and plot linear correlations
-uwu_dist_meta_pear <- uwu_dist_meta %>% 
-  select(colnames(uwu_dist_df),where(is.numeric))
-cors_cats <- colnames(uwu_dist_meta_pear) [(ncol(uwu_dist_df)+1):ncol(uwu_dist_meta_pear)] 
-for (i in cors_cats) {
-  p <- ggplot(uwu_dist_meta_pear, aes_(x=quote(value), y=as.name(i))) +
-  geom_point() + geom_smooth(method = "lm", formula = "y~x")
-  print(p)
-}
-#pdf(here::here("UwUnifrac - numeric metadata correlations.pdf"), width = 8, height = 6)
-walk(cors_cats, 
-     ~print(ggstatsplot::ggscatterstats(uwu_dist_meta_pear, x=value, y={{.}}, type = "nonparametric", xlab = "Unifrac")))
-#dev.off()
-```
 
-
-```{r beta-score-box}
-#Prepare and plot boxplots (categorical metadata)
-uwu_dist_meta_box <- uwu_dist_meta %>% 
-  select(colnames(uwu_dist_df),where(is.character),where(is.factor),
-         -Patient,-Type, -contains("Date"))
-box_cats <- colnames(uwu_dist_meta_box) [(ncol(uwu_dist_df)+1):ncol(uwu_dist_meta_box)] 
-for (i in box_cats) {
-  p <- ggplot(uwu_dist_meta_box, aes_(x=as.name(i),y=quote(value))) +
-  geom_boxplot() + geom_jitter()  
-  print(p)
-}
-```
-
-
-```{r beta-score-box-stats, eval=FALSE}
-#pdf(here::here("UwUnifrac - categoric metadata correlations.pdf"), width = 8, height = 6)
-walk(box_cats, 
-     ~print(ggstatsplot::ggbetweenstats(uwu_dist_meta_box, x = {{.}}, y=value, ylab = "Unifrac", type = "nonparametric")))
-#dev.off()
-```
 
 
 Plot final graphs to correlate metadata and Unifrac for publication - Type of stoma
@@ -185,106 +110,99 @@ Nutritional independence at 30 days
 Complications
 
 
-```{r pub-figs, fig.width=6, fig.height=4}
+```{r pub-figs_spear, fig.width=6, fig.height=4}
 final_meta <- read_tsv(here::here("final_Metadata.txt"))
 all(uwu_dist_df$SampleID %in% final_meta$`#SampleID`)
 uwu_dist_pub <- uwu_dist_df %>% 
   left_join(final_meta, by = c("SampleID" = "#SampleID"))
 uwu_dist_spear_cor_pub <- uwu_dist_pub %>% 
-  select(value, `Age at stoma closure (days)`, `Time with stoma (days)`)
+  select(value, c("Age at stoma closure (days)", "Time with stoma (days)", "Age at primary surgery (days)", "Last_weight",
+                                     "Stoma volume (ml/day)"))
 uwu_dist_spear_cor_pub_test <- uwu_dist_spear_cor_pub %>% 
-  cor_test(vars = "value", vars2 = c("Age at stoma closure (days)", "Time with stoma (days)"), method = "spearman")
-#Define my colors
-mycolors <- rcartocolor::carto_pal(name = "Geyser")
-
-#Plot correlations results
-spear_plots <- map(c("Age at stoma closure (days)", "Time with stoma (days)"),
-                   ~ggplot(uwu_dist_spear_cor_pub, aes_(x = quote(value), y = as.name(.x))) +
-                     geom_smooth(method = "lm",color = mycolors [7], lwd = 1.5, fill = "grey70") +
-                     geom_point() +
-                     labs(x = "Unweighted Unifrac Distance", 
-                          subtitle = str_c("Spearman's Rank Test: \n", "Spearman's rho = ",
-                                           pull(filter(uwu_dist_spear_cor_pub_test, var2 == .x), cor),
-                                           " ; p = ", 
-                                           round(pull(filter(uwu_dist_spear_cor_pub_test, var2 == .x), p),2))) +
-                     coord_cartesian(ylim = c(0,NA)) +
-                     theme_prism(base_size = 16))
-spear_plots 
-#Save the plots as pngs
-#walk2(spear_plots, c("Age at stoma closure (days)", "Time with stoma (days)"), 
- #     ~ggsave(here::here(str_c("pubs_figures/U_Unifrac Spearman against ", .y,".png")),.x, width = 6, height = 4, dpi = 720))
+  cor_test(vars = "value", vars2 = c("Age at stoma closure (days)", "Time with stoma (days)", "Age at primary surgery (days)", "Last_weight",
+                                     "Stoma volume (ml/day)"), method = "spearman") %>% 
+  mutate(padj = p.adjust(p, method = "BH"))
 ```
-
-Make the figures for the boxplots
 
 ```{r pub-figs-box, fig.width=6, fig.height=4, eval=FALSE}
 #Compute and plot Mann-Witney U tests
 uwu_dist_box_pub <- uwu_dist_pub %>% 
-  select(value, `Antibiotic in last month of FU`, `Mode of delivery`, `Nutritional independence at day 30`, Complication, `Type of stoma`) %>% 
+  select(value, Sex, `PN use` ,`Antibiotic in last month of FU`, `Mode of delivery`, 
+         `Nutritional independence at day 30`, Complication, `Type of stoma`) %>% 
   rename_with(.fn = function(x) str_replace_all(x, " ", "_"))
 box_cats_pubs <- set_names(colnames(uwu_dist_box_pub) [-1], nm= colnames(uwu_dist_box_pub) [-1]) 
 uwu_dist_box_pub_test <- map(box_cats_pubs, ~wilcox_test(data =uwu_dist_box_pub, as.formula(str_c("value ~ ", .)))) %>% 
-  map(add_xy_position) %>% 
-  map(mutate, signi_star = if_else(p<0.05, "*","ns"))
+  map(add_xy_position)
 
 #Check adjusted p-values
 dist_box_pub_adjust <- uwu_dist_box_pub_test %>% 
   reduce(rbind) %>% 
-  mutate(padj = p.adjust(p, method = "BH"))
+  mutate(padj = p.adjust(p, method = "BH")) 
+#Combine all p-values for Spearman and for wilcoxon and adjust them together
+raw_ps <- c(uwu_dist_spear_cor_pub_test$p, dist_box_pub_adjust$p)
+adj_ps <- p.adjust(raw_ps, method = "BH")
+#Put the adjusted ps in their appropriate tables
+uwu_dist_spear_cor_pub_test$padj <- adj_ps [1:nrow(uwu_dist_spear_cor_pub_test)]
+#write_csv(uwu_dist_spear_cor_pub_test, file = here::here(str_c("pubs_figures/U_Unifrac Spearman again test results.csv")))
+dist_box_pub_adjust$padj <- adj_ps [(nrow(uwu_dist_spear_cor_pub_test)+1):length(adj_ps)]
+#write_csv(dist_box_pub_adjust, file = here::here(str_c("pubs_figures/U_Unifrac Wilcoxon again test results.csv")))
+dist_box_pub_adjust <- dist_box_pub_adjust %>% 
+  split(., seq(nrow(.)))
+```
 
-#Plot the results - with or without numbers for p, and with or without violins
+```{r pub-figs_spear_plot, fig.width=6, fig.height=4}
+#Plot correlations results
+spear_plots <- map(c("Age at stoma closure (days)", "Time with stoma (days)"),
+                   ~ggplot(uwu_dist_spear_cor_pub, aes_(x = quote(value), y = as.name(.x))) +
+                     geom_smooth(method = "lm",color = mycolors [1], lwd = 1.5, fill = "grey70") +
+                     geom_point(size = 3) +
+                     labs(x = "Unweighted Unifrac Distance", 
+                          subtitle = str_c("Spearman's Rank Test: \n", "Spearman's rho = ",
+                                           pull(filter(uwu_dist_spear_cor_pub_test, var2 == .x), cor),
+                                           " ; p = ", 
+                                           round(pull(filter(uwu_dist_spear_cor_pub_test, var2 == .x), padj),2))) +
+                     coord_cartesian(ylim = c(0,NA)) +
+                     theme_classic(base_size = 16) + 
+                     theme(axis.text = element_text(face = "bold", size = 15),
+                           axis.title = element_text(face = "bold")))
+spear_plots 
+#Save the plots as pngs
+#walk2(spear_plots, c("Age at stoma closure (days)", "Time with stoma (days)"), 
+ #     ~ggsave(here::here(str_c("pubs_figures/U_Unifrac Spearman against ", .y,".png")),.x, width = 6, height = 4, dpi = 1080))
+#walk2(spear_plots, c("Age at stoma closure (days)", "Time with stoma (days)"), 
+ #     ~ggsave(here::here(str_c("pubs_figures/U_Unifrac Spearman against ", .y,".svg")),.x, width = 6, height = 4))
+```
 
+Make the figures for the boxplots
 
-violin_ps <- map2(box_cats_pubs, uwu_dist_box_pub_test, ~
-                          ggplot(uwu_dist_box_pub, aes_(x=as.name(.x), y=quote(value))) +
-                          geom_violin(lwd=1) +
-                          geom_boxplot(width = 0.3, alpha = 0, lwd=1) + 
-                          geom_jitter(aes_(color = as.name(.x)),width = 0.15, size = 3.5, alpha = 0.5) +
-                          scale_color_manual(values = mycolors [c(1,7)]) +
-                          guides(color = 'none') +
-                          labs(y="Unweighted Unifrac Distance", x = str_replace_all(.x,"_"," ")))
-pwalk(list(violin_ps,uwu_dist_box_pub_test, names(violin_ps)),
-      ~ggsave(here::here(str_c("pubs_figures/violin number p U_Unifrac MW against ", ..3,".png")),
-              ..1 + add_pvalue(..2,
-                             bracket.nudge.y = 0.01,
-                             tip.length = 0,
-                             bracket.size = 1,
-                             label.size = 4.5,
-                             label = "p = {round(p,2)}"), width = 7, height = 5, dpi = 720))
-pwalk(list(violin_ps,uwu_dist_box_pub_test, names(violin_ps)),
-      ~ggsave(here::here(str_c("pubs_figures/violin star p U_Unifrac MW against ", ..3,".png")),
-              ..1 +   add_pvalue(..2,
-                                 bracket.nudge.y = 0.01,
-                                 tip.length = 0,
-                                 bracket.size = 1,
-                                 label.size = 7,
-                                 label = "signi_star"), width = 7, height = 5, dpi = 720))
+```{r pub-figs-box-plot, fig.width=6, fig.height=4, eval=FALSE}
+#Plot the results
 
 no_violin_p_num_ps <- map2(box_cats_pubs, uwu_dist_box_pub_test, 
                            ~ ggplot(uwu_dist_box_pub, aes_(x=as.name(.x), y=quote(value))) +
-                             geom_boxplot(width = 0.7, alpha = 0, lwd=1) + 
-                             geom_jitter(aes_(color = as.name(.x)),width = 0.4, size = 3.5, alpha = 0.5) +
-                             scale_color_manual(values = mycolors [c(1,7)]) +
+                             geom_boxplot(aes_(color = as.name(.x)), width = 0.7, alpha = 0, lwd=1) + 
+                             ggforce::geom_sina(aes_(color = as.name(.x)),maxwidth = 0.4, size = 3.5, alpha = 1) +
+                             #geom_jitter(aes_(color = as.name(.x)),width = 0.2, size = 3.5, alpha = 1) +
+                             scale_color_manual(values = mycolors [c(1,2)]) +
                              guides(color = 'none') +
-                             labs(y="Unweighted Unifrac Distance", x = str_replace_all(.x,"_"," ")) +
+                             labs(y="Unweighted UniFrac\nDistance", x = str_replace_all(.x,"_"," ")) +
                              coord_cartesian(ylim = c(0,0.65)))
+box_p_vals_ps <- pmap(list(no_violin_p_num_ps,dist_box_pub_adjust, names(no_violin_p_num_ps)),
+                      ~..1 + add_pvalue(..2,
+                                        bracket.nudge.y = 0.01,
+                                        tip.length = 0,
+                                        bracket.size = 1,
+                                        label.size = 4.5,
+                                        label = "p = {round(padj,2)}"))
+box_p_vals_ps
+#Print the results out as png and svg
+#pwalk(list(box_p_vals_ps, names(no_violin_p_num_ps)),
+ #     ~ggsave(here::here(str_c("pubs_figures/box number p U_Unifrac MW against ", ..2,".png")),
+  #            ..1, width = 6, height = 4, dpi = 1080))
+#pwalk(list(box_p_vals_ps, names(no_violin_p_num_ps)),
+ #     ~ggsave(here::here(str_c("pubs_figures/box number p U_Unifrac MW against ", ..2,".svg")),
+  #            ..1, width = 6, height = 4))
 
-pwalk(list(no_violin_p_num_ps,uwu_dist_box_pub_test, names(no_violin_p_num_ps)),
-      ~ggsave(here::here(str_c("pubs_figures/box number p U_Unifrac MW against ", ..3,".png")),
-              ..1 + add_pvalue(..2,
-                             bracket.nudge.y = 0.01,
-                             tip.length = 0,
-                             bracket.size = 1,
-                             label.size = 4.5,
-                             label = "p = {round(p,2)}"), width = 6, height = 4, dpi = 720))
-pwalk(list(no_violin_p_num_ps,uwu_dist_box_pub_test, names(no_violin_p_num_ps)),
-      ~ggsave(here::here(str_c("pubs_figures/box star p U_Unifrac MW against ", ..3,".png")),
-              ..1 +   add_pvalue(..2,
-                                 bracket.nudge.y = 0.01,
-                                 tip.length = 0,
-                                 bracket.size = 1,
-                                 label.size = 7,
-                                 label = "signi_star"), width = 6, height = 4, dpi = 720))
 ```
 
 
@@ -301,7 +219,7 @@ all(mq_meta$sample_id %in% sample_names(physeq))
 mq_mat <- mq [,-1] %>% 
   . [,mq_meta$sample] %>% 
   rename_with(function(x) mq_meta$sample_id) %>% 
-  mutate(across(everything(),~ as.numeric(str_replace_na(.,replacement = 0)))) %>% 
+  mutate(across(everything(),~ as.numeric(str_replace_na(.,replacement = "0")))) %>% 
   as.matrix()
 rownames(mq_mat) <- mq$Genes
 #Calculate Euclidean distances between samples
@@ -317,17 +235,6 @@ ggplot(prot_dist_df) +
   geom_histogram(aes(value), binwidth = 50)
 ```
 
-```{r permanova-prot}
-perm_prot_meta <- as_tibble(sample_data(physeq), rownames = NA) %>% 
-  mutate(Batch = as_factor(Batch)) %>% 
-  filter(sample.id %in% prot_dist_df$SampleID | sample.id %in% prot_dist_df$ToSample)
-
-vegan::adonis2(prot_dist ~ Patient + Type + Batch +Sex + mode.of.delivery + Antibiotic_last_1_month_yes.no,
-               data = perm_prot_meta, by = "terms")
-vegan::adonis2(prot_dist ~ Patient + Type + Batch +Sex + mode.of.delivery + Antibiotic_last_1_month_yes.no,
-               data = perm_prot_meta, by = "margin")
-anova(vegan::betadisper(prot_dist, perm_prot_meta$Patient))
-```
 
 Repeat correlations with metadata for protein distances
 ```{r prot-distance-scatter}
@@ -365,7 +272,7 @@ walk(box_cats,
 
 
 
-```{r plot-prot-microbe}
+```{r plot-prot-microbe, fig.width=6, fig.height=5}
 #Calculate beta diversity distances - test all
 method_list <- c("jaccard","bray","unifrac", "wunifrac") %>% 
   set_names(c("jaccard","bray","unifrac", "wunifrac"))
@@ -430,12 +337,17 @@ padj_coef_unifrac <- coef_top_list %>%
   filter(metric == "unifrac")
 
 uwu_euclid_plot <- ggplot(joint_dist_df_list [["unifrac"]], aes(x = value.x, y = value.y)) +
-                    geom_smooth(method = "lm",color = mycolors [7], lwd = 1.5, fill = "grey70") +
-                     geom_point() +
-                    labs(x = str_c("Unifrac"," 16S distance"), y ="Protein Euclidean distance",
-                         subtitle = str_c("Spearman rho=",round(as.numeric(pull(padj_coef_unifrac,"r")),2)," adjusted p=",
-                                          format(as.numeric(pull(padj_coef_unifrac,"padj")),digits = 2, scientific = T)))
-#ggsave(here::here("pubs_figures/Unifrac-Euclid spear_cor.png"), uwu_euclid_plot, width = 6, height = 5, dpi = 720)
+  geom_smooth(method = "lm",color = mycolors [1], lwd = 3, fill = "grey70") +
+  geom_point(size = 4) +
+  labs(x = str_c("UniFrac"," 16S\nDistance"), y ="Protein Euclidean\nDistance",
+       subtitle = str_c("Spearman rho = ",round(as.numeric(pull(padj_coef_unifrac,"r")),2),", p = ",
+                        format(as.numeric(pull(padj_coef_unifrac,"padj")),digits = 2, scientific = T))) +
+  theme_classic(base_size = 20) + 
+  theme(axis.text = element_text(face = "bold", size = 18),
+        axis.title = element_text(face = "bold"))
+uwu_euclid_plot
+#ggsave(here::here("pubs_figures/Unifrac-Euclid spear_cor.png"), uwu_euclid_plot, width = 6, height = 5, dpi = 1080)
+#ggsave(here::here("pubs_figures/Unifrac-Euclid spear_cor.svg"), uwu_euclid_plot, width = 6, height = 5)
 ```
 
 
