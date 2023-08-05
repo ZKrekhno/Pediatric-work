@@ -1,0 +1,216 @@
+---
+title: "limma analysis log2, remove outliers"
+output: html_notebook
+author: Zakhar Krekhno
+---
+
+
+```{r setup, include=FALSE}
+library(limma)
+library(readxl)
+library(EnhancedVolcano)
+library(ggprism)
+library(tidyverse)
+```
+
+```{r helper_setup}
+theme_set(theme_classic(base_size = 16) + 
+                     theme(axis.text = element_text(face = "bold", size = 15),
+                           axis.title = element_text(face = "bold")))
+#Define my colors
+mycolors <- c("seagreen4","violetred4")
+```
+
+
+Import normalyzer log-transfromed proteomics data
+```{r import}
+cnts <- read_tsv(here::here("proteomics_final_analysis/normalyzer/test_run/log2-normalized.txt"))
+meta <- read_tsv(here::here("proteomics_final_analysis/norm_meta.tsv")) %>% 
+  mutate(sample_id = str_remove_all(str_extract(sample,"i_.._....-"),"_|-"))
+```
+Remove patient 1 and 2, as they are outliers
+
+```{r prep_mats, warning=FALSE}
+#Prep design matrix
+meta_filt <- filter(meta, Patient != "01", Patient != "02")
+design_filt <- model.matrix(~Patient+group, data = meta_filt)
+#Create the count matrix
+dge_cnts <- cnts [,-1] %>% 
+  . [,meta_filt$sample] %>% 
+  rename_with(function(x) meta_filt$sample_id) %>% 
+  mutate(across(everything(),~ as.numeric(str_replace_na(.,replacement = "0")))) %>% 
+  as.matrix()
+rownames(dge_cnts) <- cnts$Genes
+```
+
+
+```{r plot-mds, warning=FALSE, fig.width=6, fig.height=4}
+#Plot MDS plot
+
+mds_plot <- plotMDS(dge_cnts,col=as.numeric(meta_filt$group), gene.selection = "common",
+                    main = "PCA plot", sub = "Patient 1 and 2 removed")
+mds_df <- data.frame(x = mds_plot$x, y = mds_plot$y, sample_id = rownames(mds_plot$distance.matrix.squared)) %>% 
+  left_join(meta_filt) %>% 
+  mutate(`Limb Type` = if_else(group == "dist", "Distal", "Proximal"),
+         patient_n = str_remove(Patient, "^0")) 
+
+ggplot(mds_df, aes(x=x,y=y, color = group)) +
+  geom_text_repel(aes(label = sample_id)) +
+  ggtitle("PCA plot but with ggrepel, so imprecise coordinates")
+
+
+ggplot(mds_df, aes(x=x,y=y)) +
+  geom_point(aes(color = `Limb Type`), size = 0, alpha = 0) +
+  geom_text(aes(label = patient_n, color = `Limb Type`), size = 6.5) + 
+  scale_color_manual(values = mycolors [c(2,1)], labels = c("Unfed", "Fed"), name = "Segment") +
+  guides(color = guide_legend(override.aes = list(size = 4, alpha =1))) +
+  labs(x="PC1 (10%)", y="PC2 (9%)") +
+  theme_classic(base_size = 16) + 
+  theme(legend.margin = margin(10,0,0,0, "pt"),
+        legend.spacing.y = unit(0, "pt"), 
+        legend.title = element_text(face = "bold", size = 18),
+        legend.text = element_text( size = 15),
+        axis.text = element_text(face = "bold", size = 15),
+        axis.title = element_text(face = "bold", size = 18))
+#ggsave(here::here("proteomics_final_analysis/final figures/PCA_limb_color_p_text.png"), width = 6, height = 4, dpi = 1080)
+#ggsave(here::here("proteomics_final_analysis/final figures/PCA_limb_color_p_text.svg"), width = 6, height = 4)
+```
+
+
+```{r write_results, warning=FALSE}
+out_fit.r <- lmFit(dge_cnts, design_filt, method = "robust")
+out_fit.r <- eBayes(out_fit.r, robust = T)
+out_res.r <- topTable(out_fit.r, number = Inf, coef = "groupprox", sort.by = "P")
+
+#write.csv(out_res.r,here::here("proteomics_final_analysis/final_results/final_limma_DE_analysis_outlier_removed.csv"))
+```
+
+Make volcano plots
+```{r volcano, fig.width=8, fig.height=6}
+select_labs <- out_res.r %>% 
+  filter(adj.P.Val < 0.05) %>% 
+  arrange(desc(abs(logFC))) %>% 
+  rownames_to_column(var = "rowname") %>% 
+  pull(var = "rowname") %>% 
+  . [1:5]
+#pdf(here::here("proteomics_final_analysis/final_results/Volcano plots without outliers.pdf"), width = 8, height = 6)
+EnhancedVolcano(out_res.r, 
+              x = "logFC",
+              y = "adj.P.Val",
+              lab = rownames(out_res.r), 
+              selectLab = select_labs,
+              pCutoff = 0.05,
+              FCcutoff = 0.3,
+              title = "Volcano Plot proximal over distal DE\nno outliers",
+              subtitle = NULL,
+              legendPosition = 'bottom',
+              boxedLabels = T,
+              drawConnectors = T,
+              max.overlaps = Inf)
+
+#dev.off()
+```
+
+
+```{r volcano-pub, fig.width=5, fig.height=5}
+EnhancedVolcano(out_res.r, 
+              x = "logFC",
+              y = "adj.P.Val",
+              lab = rownames(out_res.r), 
+              selectLab = "",
+              pCutoff = 0.05,
+              FCcutoff = 0.3,
+              title = NULL,
+              caption = NULL,
+              subtitle = NULL,
+              col = c("grey30", mycolors [1], "royalblue", mycolors [7])) +
+  coord_cartesian(ylim = c(0,12)) +
+  scale_y_continuous(breaks = c(0,3,6,9,12)) +
+  theme_prism(base_size = 14) +
+  theme(legend.position = 'bottom',
+        legend.margin = margin(0,40,0,40,"pt"),
+        legend.text = element_text(size = 11),
+        legend.key.width = unit(0,"pt"))
+#ggsave(here::here("proteomics_final_analysis/final_results/pub/volcano.png"), width = 5, height = 5, dpi = 720)
+EnhancedVolcano(out_res.r, 
+              x = "logFC",
+              y = "adj.P.Val",
+              lab = rownames(out_res.r), 
+              selectLab = "",
+              pCutoff = 0.05,
+              FCcutoff = 0.3,
+              title = NULL,
+              caption = NULL,
+              subtitle = NULL,
+              col = c("grey70", "grey70", "grey70", mycolors [7])) +
+  coord_cartesian(ylim = c(0,12)) +
+  scale_y_continuous(breaks = c(0,3,6,9,12)) +
+  guides(color = 'none') +
+  theme_prism(base_size = 14) +
+  theme(axis.text =  element_text(size = 16),
+    axis.title =  element_text(size = 18))
+#ggsave(here::here("proteomics_final_analysis/final_results/pub/volcano_less_color.png"), width = 5, height = 5, dpi = 720)
+```
+
+#Cluster profiler analysis of top DE proteins
+Do it with c2 set instead of h
+```{r cp}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+#Import the Hallmark set of genes and themes
+h <- read.gmt(here::here("proteomics_final_analysis/c2.cp.v7.5.1.symbols.gmt")) %>%      
+  filter(str_detect(term, "REACT")) %>% 
+  mutate(term = str_remove(term, "REACTOME_"))
+#Prepare unfiltered objects for enrichment
+hits_tbl <- out_res.r %>% 
+  rownames_to_column(var = "gene name") %>% 
+  filter(adj.P.Val <= 0.05, abs(logFC) > 0.3)
+fold_change <- set_names(hits_tbl$logFC, nm = hits_tbl$`gene name`)
+#Perform enrichment analysis on unfiltered results
+enrich_h <- enricher(hits_tbl$`gene name`,
+                     universe = rownames(out_res.r),
+                     TERM2GENE = h,
+                     pAdjustMethod = "BH",
+                     pvalueCutoff = 0.2,
+                     qvalueCutoff = 1)
+as.data.frame(enrich_h) %>% View
+
+
+#pdf(here::here("proteomics_final_analysis/final_results/Functional analysis of top hits by p-value (cut-off at 0.1.pdf"), width = 10, height = 8)
+dotplot(enrich_h) +
+  scale_color_distiller(palette = "PuRd", breaks = c(0.03,0.05,0.07))
+heatplot(enrich_h, foldChange = fold_change) +
+  scale_fill_gradient2(name = "logFC",low = mycolors [1],high = mycolors [7], mid = mycolors [4], midpoint = 0)
+cnetplot(enrich_h) 
+#dev.off()
+```
+
+```{r cp-pub, fig.width=6, fig.height=4}
+#Create the table for network construction
+net_df <- as.data.frame(enrich_h)  %>% 
+  dplyr::select(ID, geneID) %>% 
+  separate(geneID, into = letters [1:14]) %>% 
+  pivot_longer(letters [1:14], names_to = "letter", values_to = "gene") %>% 
+  filter(!is.na(gene)) %>% 
+  dplyr::select(-letter) %>% 
+  mutate(ID = str_replace_all(ID, "_", " "))
+
+#write_tsv(net_df, here::here("proteomics_final_analysis/final_results/pub/reactome enrich_all_DE_net.tsv"))
+
+#Create the annotation table for network construction
+limma_res <- out_res.r %>% 
+  as_tibble(rownames = "ID")
+
+net_annot <- net_df %>% 
+  dplyr::select(ID) %>% 
+  mutate(class = "Function") %>% 
+  bind_rows(data.frame(ID = net_df$gene, class = "protein")) %>% 
+  left_join(dplyr::select(limma_res,ID,logFC))
+#write_tsv(net_annot, here::here("proteomics_final_analysis/final_results/pub/reactome enrich_all_DE_annot.tsv"))
+
+heatplot(enrich_h, foldChange = fold_change) +
+  scale_fill_gradient2(name = "logFC",low = mycolors [1],high = mycolors [7], mid = mycolors [4], midpoint = 0)
+ggsave(here::here("proteomics_final_analysis/final_results/pub/heatplot_all_DE.png"), width = 6, height = 4, dpi = 720)
+```
+
+
